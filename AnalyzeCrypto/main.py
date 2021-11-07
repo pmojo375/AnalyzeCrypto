@@ -12,19 +12,7 @@ import locale
 locale.setlocale(locale.LC_ALL, '')  # Use '' for auto, or force e.g. to 'en_US.UTF-8'
 from pathlib import Path
 
-# Create a custom logger
-logger = logging.getLogger(__name__)
-
 headers = ['Timestamp', 'Type', 'Recieve Amount', 'Recieve Unit', 'Recieve Cost Basis', 'Recieve Unit Cost Basis', 'Send Amount', 'Send Unit', 'Send Cost Basis', 'Send Unit Cost Basis', 'Fee', 'Fee Unit', 'Sold Value', 'Sold Unit Value']
-
-# Create handlers
-c_handler = logging.StreamHandler()
-
-# Create formatters and add it to handlers
-c_format = logging.Formatter('%(name)s - %(levelname)s - %(message)s')
-
-# Add handlers to the logger
-logger.addHandler(c_handler)
 
 taxes = {'2021': [], '2020': [], '2019': [], '2018': [], '2017': []}
 gains = {'2021': [], '2020': [], '2019': [], '2018': [], '2017': []}
@@ -37,10 +25,10 @@ buycoinqty_row = 'Recieve Amount'
 sellcoinqty_row = 'Send Amount'
 fee_row = 'Fee'
 feecoin_row = 'Fee Unit'
-buyunitcost_row = 'Recieve Unit Cost Basis'
-sellunitcost_row = 'Send Unit Cost Basis'
-buycostbasis_row = 'Recieve Cost Basis'
-sellcostbasis_row = 'Send Cost Basis'
+buyunitcost_row = 'Recieve Unit Cost Basis' # USD value of assets per unit worth
+sellunitcost_row = 'Send Unit Cost Basis' # USD value of assets per unit worth
+buycostbasis_row = 'Recieve Cost Basis' # USD amount the event was worth
+sellcostbasis_row = 'Send Cost Basis' # USD amount the event was worth
 
 timestamp_format = "%m/%d/%Y %H:%M:%S"
 today = datetime.today()
@@ -79,31 +67,31 @@ history_header = ['Timestamp', 'Type', 'Recieve Amount', 'Recieve Unit', 'Reciev
 
 
 # get list of current held coins/tokens
-def get_current(assets):
+def get_current(assets, buys):
+
+	return_data = {}
+	assets_list = []
+	amount = {}
+	rates = {}
 
 	# loop through inputted assets
 	for asset in assets:
-
-		# get string length for formatting
-		asset_len = len(asset)
-
-		# print asset name in pretty format
-		print(f"\n**{asset_len*'*'}**")
-		print(f"* {asset} *")
-		print(f"**{asset_len*'*'}**\n")
 
 		# initialize variables
 		held = 0
 		realized = 0
 		sold = 0
 		tax = 0
-
+		print(asset)
 		# get current price from web
 		current_price_url = f'{current_price_base_url}{asset}'
 		current_price_response = requests.get(current_price_url).json()
 
-		# pull current price from web response
-		asset_price = current_price_response['USD']
+		if 'USD' in current_price_response:
+			# pull current price from web response
+			asset_price = current_price_response['USD']
+		else:
+			asset_price = 0
 
 		# loop though buys
 		for buy in buys:
@@ -111,140 +99,130 @@ def get_current(assets):
 			# check if buy asset is the asset in question
 			if buy.asset == asset:
 
-				if buy.amount * asset_price >= 1:
+				# add to asset total count
+				held = buy.amount + held
 
-					print(f' - Added {buy.amount}')
-					
-					# add to asset total count
-					held = buy.amount + held
+		amount[asset] = held
+		assets_list.append(asset)
+		rates[asset] = asset_price
 
-		if held * asset_price >= 1:
+	return_data['amount'] = amount
+	return_data['assets'] = assets_list
+	return_data['rates'] = rates
 
-			print(f'Asset price {asset_price}')
-
-			print(f'Amount Held: {held} totaling {"${:,.2f}".format(asset_price * held)}')
-		else:
-			print('None')
-		#print('Realized Gain/Loss: ')
-		#print('Total Tax Owed: ')
-		#print('Amount Held: ')
+	return return_data
 
 
+# adds the asset to a unique list of all coins that have been either bought, sold or traded
 def add_asset(asset):
 	if asset not in coins_held:
 		coins_held.append(asset)
 
 
 def csv_buy(row):
+
+	# get the asset
 	asset = row[buycoin_row]
-	
+
+	# add asset to list of assets
 	add_asset(asset)
 
+	# get the quantity
 	qty = float(row[buycoinqty_row])
-	timestamp = row[date_row]
-	buy_cost = row[buyunitcost_row]
 
-	asset_date = datetime.strptime(timestamp, timestamp_format)
-	print(f'Importing {asset_date.strftime("%m/%d/%Y %H:%M:%S")} Importing Buy From CSV')
+	# get the timestamp and print
+	timestamp = datetime.strptime(row[date_row], timestamp_format)
 
-	if buy_cost == '':
-		url = f'{historical_price_base_url}{tsym}&{fsym}{asset}&{limit}{to_ts}{asset_date.timestamp()}&{api_key}'
+	print(f'Importing {timestamp.strftime("%m/%d/%Y %H:%M:%S")} Importing Buy From CSV')
 
-		r = requests.get(url)
-		response = r.json()
+	# if there is no unit cost then get it from an API
+	if row[buyunitcost_row] == '':
+		url = f'{historical_price_base_url}{tsym}&{fsym}{asset}&{limit}{to_ts}{timestamp.timestamp()}&{api_key}'
 
-		asset_price = response['Data'][1]['close']
-
-		cost = asset_price
+		unit_cost_basis = requests.get(url).json()['Data'][1]['close']
 	else:
-		cost = float(buy_cost)
+		unit_cost_basis = float(row[buyunitcost_row])
 
-	new_buy = Buy(asset, cost, qty, asset_date)
+	# create and return the buy object
+	return Buy(asset, unit_cost_basis, qty, timestamp)	
 
-	return new_buy	
 
 def csv_sell(row):
 	asset = row[sellcoin_row]
 	qty = float(row[sellcoinqty_row])
-	timestamp = row[date_row]
-	sell_cost_basis = row[sellunitcost_row]
+	
+	# get the timestamp and print
+	timestamp = datetime.strptime(row[date_row], timestamp_format)
 
-	asset_date = datetime.strptime(timestamp, timestamp_format)
-	print('Importing ' + asset_date.strftime("%m/%d/%Y %H:%M:%S") + ' Importing Sell From CSV')
+	print('Importing ' + timestamp.strftime("%m/%d/%Y %H:%M:%S") + ' Importing Sell From CSV')
 
-	url = f'{historical_price_base_url}{tsym}&{fsym}{asset}&{limit}{to_ts}{asset_date.timestamp()}&{api_key}'
+	if 'Sold Unit Value' in row:
+		unit_cost_basis = row['Sold Unit Value']
+	else:
+		url = f'{historical_price_base_url}{tsym}&{fsym}{asset}&{limit}{to_ts}{timestamp.timestamp()}&{api_key}'
 
-	r = requests.get(url)
-	response = r.json()
+		unit_cost_basis = requests.get(url).json()['Data'][1]['close']
 
-	asset_price = response['Data'][1]['close']
-
-	cost = asset_price
-
-	new_sell = Sell(asset, cost, sell_cost_basis, qty, asset_date)
+	new_sell = Sell(asset, unit_cost_basis, qty, timestamp)
 
 	return new_sell
+
 
 def csv_trade(row):
 
 	sell_asset = row[sellcoin_row]
 	sell_qty = float(row[sellcoinqty_row])
-	timestamp = row[date_row]
 	sell_cost_basis = row[sellunitcost_row]
 
-	asset_date = datetime.strptime(timestamp, timestamp_format)
+	timestamp = datetime.strptime(row[date_row], timestamp_format)
 
-	print('Importing ' + asset_date.strftime("%m/%d/%Y %H:%M:%S") + ' Trade From CSV')
+	print('Importing ' + timestamp.strftime("%m/%d/%Y %H:%M:%S") + ' Trade From CSV')
+	
+	if 'Sold Unit Value' in row:
+		sell_unit_cost_basis = row['Sold Unit Value']
+	else:
+		url = f'{historical_price_base_url}{tsym}&{fsym}{sell_asset}&{limit}{to_ts}{timestamp.timestamp()}&{api_key}'
 
-	url = f'{historical_price_base_url}{tsym}&{fsym}{sell_asset}&{limit}{to_ts}{asset_date.timestamp()}&{api_key}'
+		sell_unit_cost_basis = requests.get(url).json()['Data'][1]['close']
 
-	r = requests.get(url)
-	response = r.json()
-
-	sell_asset_price = response['Data'][1]['close']
-
-	sell_cost = sell_asset_price
-
-	new_sell = Sell(sell_asset, sell_cost, sell_cost_basis, sell_qty, asset_date)
+	new_sell = Sell(sell_asset, sell_unit_cost_basis, sell_qty, timestamp)
 
 	buy_asset = row[buycoin_row]
 
 	add_asset(buy_asset)
 
 	buy_qty = float(row[buycoinqty_row])
-	buy_cost = row[buyunitcost_row]
 
-	if buy_cost == '':
+	if row[buyunitcost_row] == '':
 		url = f'{historical_price_base_url}{tsym}&{fsym}{buy_asset}&{limit}{to_ts}{asset_date.timestamp()}&{api_key}'
 
-		r = requests.get(url)
-		response = r.json()
-
-		buy_asset_price = response['Data'][1]['close']
-
-		buy_cost = buy_asset_price
+		buy_unit_cost_basis = requests.get(url).json()['Data'][1]['close']
 	else:
-		buy_cost = float(buy_cost)
+		buy_unit_cost_basis = float(row[buyunitcost_row])
 
-	new_buy = Buy(buy_asset, buy_cost, buy_qty, asset_date)
+	new_buy = Buy(buy_asset, buy_unit_cost_basis, buy_qty, timestamp)
 
 	new_buy.part_of_trade(new_sell)
 	new_sell.part_of_trade(new_buy)
 
 	return [new_buy, new_sell]
 
+
 def process_tax(buys):
 
+	# iterate through the buys
 	for buy in buys:
 
 		print('')
 		print('********************************************************************************************************')
-		print(f'{buy.date.strftime("%m/%d/%Y %H:%M:%S")} BUY: {round(buy.og_amount,5)} {buy.asset} @ {"${:,.2f}".format(buy.cost)}/{buy.asset} - {"${:,.2f}".format(buy.cost*buy.og_amount)} total - {round(buy.amount, 5)} remaining')
+		print(f'{buy.timestamp.strftime("%m/%d/%Y %H:%M:%S")} BUY: {round(buy.og_amount,5)} {buy.asset} @ {"${:,.2f}".format(buy.cost_basis)}/{buy.asset} - {"${:,.2f}".format(buy.cost_basis*buy.og_amount)} total - {round(buy.amount, 5)} remaining')
 		print('********************************************************************************************************')
 
 		i = 1
 
+		# iterate through the sell events
 		for event in buy.get_sell_events():
+
 			gain = event['profit_loss']
 
 			buy.gains.append(gains)
@@ -257,86 +235,127 @@ def process_tax(buys):
 				# short term capital gain rate
 				tax = round(gain * shortterm_2020, 2)
 
-			buy.tax_events.append({'gainloss': gain, 'date_bought': buy.date, 'date_sold': event['date_sold'], 'tax': tax})
+			buy.tax_events.append({'gainloss': gain, 'date_bought': buy.timestamp, 'date_sold': event['timestamp'], 'tax': tax})
 
 			if event['trade']:
-				print(f"{i} - TRADE: {event['date_sold'].strftime('%m/%d/%Y %H:%M:%S')}: {round(event['qty'],5)} {event['asset']} at {'${:,.2f}'.format(event['value'])}/{event['asset']} with a profit/loss of {'${:,.2f}'.format(gain)} and a taxable value of {'${:,.2f}'.format(tax)}")
+				print(f"{i} - TRADE: {event['timestamp'].strftime('%m/%d/%Y %H:%M:%S')}: {round(event['qty'],5)} {event['asset']} at {'${:,.2f}'.format(event['unit_cost_basis'])}/{event['asset']} with a profit/loss of {'${:,.2f}'.format(gain)} and a taxable value of {'${:,.2f}'.format(tax)}")
 			else:
-				print(f"{i} - SELL : {event['date_sold'].strftime('%m/%d/%Y %H:%M:%S')}: {round(event['qty'],5)} {event['asset']} at {'${:,.2f}'.format(event['value'])}/{event['asset']} with a profit/loss of {'${:,.2f}'.format(gain)} and a taxable value of {'${:,.2f}'.format(tax)}")
+				print(f"{i} - SELL : {event['timestamp'].strftime('%m/%d/%Y %H:%M:%S')}: {round(event['qty'],5)} {event['asset']} at {'${:,.2f}'.format(event['unit_cost_basis'])}/{event['asset']} with a profit/loss of {'${:,.2f}'.format(gain)} and a taxable value of {'${:,.2f}'.format(tax)}")
 			
-			taxes[str(event['date_sold'].year)].append(tax)
-			gains[str(event['date_sold'].year)].append(gain)
+			taxes[str(event['timestamp'].year)].append(tax)
+			gains[str(event['timestamp'].year)].append(gain)
 
 			i = i + 1
         
 
-def read_csv(file_name='history.csv', buys=buys, sells=sells):
+# simply reads the history and returns it in an array of transactions
+def read_csv(file_name):
 
-	my_file = Path("outputhistory.csv")
-	if my_file.is_file():
-		file_name = 'outputhistory.csv'
-		with open(file_name, mode='r') as historyinput:
-			reader = csv.DictReader(historyinput)
+	with open(file_name, mode='r') as historyinput:
+		reader = csv.DictReader(historyinput)
 
-			for row in reader:
-				if row[type_row] == 'Buy' or row[type_row] == 'Recieve':
-					new_buy = csv_buy(row)
-					buys.append(new_buy)
-				if row[type_row] == 'Send':
-					new_sell = csv_sell(row)
-					sells.append(new_sell)
-				if row[type_row] == 'Trade':
-					new_trade = csv_trade(row)
-					buys.append(new_trade[0])
-					sells.append(new_trade[1])
-	else:
-		with open(file_name, mode='r') as historyinput:
-			with open('outputhistory.csv', mode='w') as historyoutput:
-				writer = csv.DictWriter(historyoutput, fieldnames=headers)
-				reader = csv.DictReader(historyinput)
+		rows = []
 
-				writer.writeheader()
+		for row in reader:
+			rows.append(row)
 
-				rows = []
+	return rows
 
-				for row in reader:
-					if row[type_row] == 'Buy' or row[type_row] == 'Recieve':
-						write_row = row
-						new_buy = csv_buy(row)
-						buys.append(new_buy)
-						write_row['Sold Value'] = ''
-						write_row['Sold Unit Value'] = ''
-						rows.append(write_row)
-					if row[type_row] == 'Send':
-						write_row = row
-						new_sell = csv_sell(row)
-						write_row['Sold Value'] = new_sell.value * new_sell.amount
-						write_row['Sold Unit Value'] = new_sell.value
-						sells.append(new_sell)
-						rows.append(write_row)
-					if row[type_row] == 'Trade':
-						write_row = row
-						new_trade = csv_trade(row)
-						write_row['Sold Value'] = new_trade[1].value * new_trade[1].amount
-						write_row['Sold Unit Value'] = new_trade[1].value
-						buys.append(new_trade[0])
-						sells.append(new_trade[1])
-						rows.append(write_row)
+def process(trans, buys=buys, sells=sells):
 
-				writer.writerows(rows)
+	# initalize rows array
+	rows = []
 
+	# iterate through all transactions
+	for row in trans:
+
+		# if transaction is one that you recieve crypto from
+		if row[type_row] == 'Buy' or row[type_row] == 'Recieve' or row[type_row] == 'Air':
+			
+			# copy row for appending data too
+			write_row = row
+
+			# process the buy
+			new_buy = csv_buy(row)
+
+			# add buy to the buys container object
+			buys.append(new_buy)
+
+			# create the sold value and sold unit value
+			write_row['Sold Value'] = ''
+			write_row['Sold Unit Value'] = ''
+
+			# add the written data to the new array
+			rows.append(write_row)
+
+		# if transaction is one where you lose crypto
+		if row[type_row] == 'Send':
+
+			# copy row for appending data too
+			write_row = row
+
+			# process the sell
+			new_sell = csv_sell(row)
+
+			# create the sold value and sold unit value
+			write_row['Sold Value'] = new_sell.unit_cost_basis * new_sell.og_amount
+			write_row['Sold Unit Value'] = new_sell.unit_cost_basis
+
+			#add the sell to the sells container object
+			sells.append(new_sell)
+
+			# add the written data to the new array
+			rows.append(write_row)
+
+		# if transaction is a crypto to crypto event
+		if row[type_row] == 'Trade':
+
+			# copy row for appending data too
+			write_row = row
+
+			# process the trade
+			new_trade = csv_trade(row)
+
+			# create the sold value and sold unit value
+			write_row['Sold Value'] = new_trade[1].unit_cost_basis * new_trade[1].og_amount
+			write_row['Sold Unit Value'] = new_trade[1].unit_cost_basis
+
+			# append the buy and sell to their container objects
+			buys.append(new_trade[0])
+			sells.append(new_trade[1])
+
+			# add the written data to the new array
+			rows.append(write_row)
+
+	# need to write to rows here with the new unit costs
+	try:
+	    with open('output_results.csv', 'w') as csvfile:
+	        writer = csv.DictWriter(csvfile, fieldnames=headers)
+	        writer.writeheader()
+	        for data in rows:
+	            writer.writerow(data)
+	    print('Data Wrote')
+	except IOError:
+	    print("I/O error")
+	# process the data
 	return_data = process_history()
 
+	# overwrite the buys and sells container objects with the processed versions
 	buys = return_data[0]
 	sells = return_data[1]
 
+	# process the tax
 	process_tax(buys)
 
+	return (buys, sells)
+
+
+# iterates through the sells and ties them to the first available buy to calculate a FIFO cast basis for all events
 def process_history(buys=buys, sells=sells):
 
-	# sort the buys and sells by date to ensure FIFO operation
-	buys = sorted(buys, key=lambda item: item.date)
-	sells = sorted(sells, key=lambda item: item.date)
+	# sort the buys and sells by timestamp to ensure FIFO operation
+	buys = sorted(buys, key=lambda item: item.timestamp)
+	sells = sorted(sells, key=lambda item: item.timestamp)
 
 	# iterate through the sells to process them
 	for asset_sell in sells:
@@ -345,7 +364,7 @@ def process_history(buys=buys, sells=sells):
 		for asset_buy in buys:
 
 			# buy has not been depleated by sells yet and is the same coin/token
-			if not asset_buy.sold() and asset_buy.asset == asset_sell.asset:
+			if not asset_buy.is_sold() and asset_buy.asset == asset_sell.asset:
 
 				sell_amount = asset_sell.amount
 
@@ -368,9 +387,11 @@ def process_history(buys=buys, sells=sells):
 					break
 	return [buys, sells]
 
+def get_coins_held():
+	return coins_held
+
 def main():
 	read_csv()
-	get_current(coins_held)
 
 
 if __name__ == "__main__":
